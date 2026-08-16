@@ -126,6 +126,11 @@ def download_by_url(url: str, output_folder: str = MUSIC_FOLDER, cancel_event=No
         "quiet": True,
         "no_warnings": True,
         "progress_hooks": [_hook],
+        "retries": 10,
+        "fragment_retries": 10,
+        "extractor_retries": 3,
+        "sleep_interval": 1,
+        "max_sleep_interval": 4,
     }
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:

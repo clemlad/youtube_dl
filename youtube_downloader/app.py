@@ -1,5 +1,6 @@
 import os
 import json
+from unittest import result
 import uuid
 import threading
 from pathlib import Path
@@ -153,6 +154,8 @@ def download_playlist():
                     _save(d)
                 _pl_jobs[job_id]["tracks"].append(filename)
                 _pl_jobs[job_id]["done"] = i + 1
+            elif not cancel_event.is_set():
+                _pl_jobs[job_id].setdefault("failed", []).append(entry["title"])
 
         _pl_jobs[job_id]["status"] = "cancelled" if cancel_event.is_set() else "done"
         _pl_jobs[job_id]["done"]   = len(_pl_jobs[job_id]["tracks"])
