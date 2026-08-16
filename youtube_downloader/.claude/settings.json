@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(.venv/Scripts/pip install *)",
+      "Bash(.venv/Scripts/python -c \"from app import app; print\\('Flask app OK'\\)\")",
+      "Bash(.venv/Scripts/python -c \"from app import app; print\\('OK'\\)\")",
+      "Bash(Get-ChildItem -Path \"C:\\\\Users\\\\cleme\\\\OneDrive\\\\Desktop\\\\cours\\\\code\\\\youtube_downloader\" -Recurse -File)",
+      "Bash(Select-Object -First 20)",
+      "Read(//c/Users/cleme/OnOneDrive/Desktop/cours/code/youtube_downloader/**)"
+    ]
+  }
+}

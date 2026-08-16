@@ -1,0 +1,10 @@
+# Les fichiers de cache
+__pycache__/
+*.pyc
+# Les musiques téléchargées
+*.mp3
+*.wav
+*.ogg
+*.flac
+*.m4a
+*.mid
