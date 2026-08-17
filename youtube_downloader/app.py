@@ -121,44 +121,49 @@ def download_playlist():
     _pl_cancel_events[job_id] = cancel_event
 
     def run():
-        pl_info = get_playlist_info(url)
-        entries = pl_info.get("entries", [])
-        pl_name = name or pl_info.get("title", "Playlist importée")
+        try:
+            pl_info = get_playlist_info(url)
+            entries = pl_info.get("entries", [])
+            pl_name = name or pl_info.get("title", "Playlist importée")
 
-        _pl_jobs[job_id].update({"status": "downloading", "name": pl_name, "total": len(entries)})
+            _pl_jobs[job_id].update({"status": "downloading", "name": pl_name, "total": len(entries)})
 
-        d = _load()
-        if pl_name not in d:
-            d[pl_name] = []
+            d = _load()
+            if pl_name not in d:
+                d[pl_name] = []
 
-        for i, entry in enumerate(entries):
-            if cancel_event.is_set():
-                break
-            _pl_jobs[job_id]["current"] = entry["title"]
-            _pl_jobs[job_id]["done"]    = i
+            for i, entry in enumerate(entries):
+                if cancel_event.is_set():
+                    break
+                _pl_jobs[job_id]["current"] = entry["title"]
+                _pl_jobs[job_id]["done"]    = i
 
-            existing = find_existing_mp3(entry["title"])
-            if existing:
-                if existing not in d[pl_name]:
-                    d[pl_name].append(existing)
-                    _save(d)
-                _pl_jobs[job_id]["tracks"].append(existing)
-                _pl_jobs[job_id]["done"] = i + 1
-                continue
+                existing = find_existing_mp3(entry["title"])
+                if existing:
+                    if existing not in d[pl_name]:
+                        d[pl_name].append(existing)
+                        _save(d)
+                    _pl_jobs[job_id]["tracks"].append(existing)
+                    _pl_jobs[job_id]["done"] = i + 1
+                    continue
 
-            result = download_by_url(entry["url"], cancel_event=cancel_event)
-            if result and not cancel_event.is_set():
-                filename = result["filename"]
-                if filename not in d[pl_name]:
-                    d[pl_name].append(filename)
-                    _save(d)
-                _pl_jobs[job_id]["tracks"].append(filename)
-                _pl_jobs[job_id]["done"] = i + 1
-            elif not cancel_event.is_set():
-                _pl_jobs[job_id].setdefault("failed", []).append(entry["title"])
+                result = download_by_url(entry["url"], cancel_event=cancel_event)
+                if result and not cancel_event.is_set():
+                    filename = result["filename"]
+                    if filename not in d[pl_name]:
+                        d[pl_name].append(filename)
+                        _save(d)
+                    _pl_jobs[job_id]["tracks"].append(filename)
+                    _pl_jobs[job_id]["done"] = i + 1
+                elif not cancel_event.is_set():
+                    _pl_jobs[job_id].setdefault("failed", []).append(entry["title"])
 
-        _pl_jobs[job_id]["status"] = "cancelled" if cancel_event.is_set() else "done"
-        _pl_jobs[job_id]["done"]   = len(_pl_jobs[job_id]["tracks"])
+            _pl_jobs[job_id]["status"] = "cancelled" if cancel_event.is_set() else "done"
+            _pl_jobs[job_id]["done"]   = len(_pl_jobs[job_id]["tracks"])
+
+        except Exception as e:
+            _pl_jobs[job_id]["status"] = "error"
+            _pl_jobs[job_id]["error"]  = str(e)
 
     threading.Thread(target=run, daemon=True).start()
     return jsonify({"job_id": job_id})

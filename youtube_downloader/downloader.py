@@ -11,6 +11,8 @@ MUSIC_FOLDER = "./musiques"
 
 def find_existing_mp3(title: str, output_folder: str = MUSIC_FOLDER) -> str | None:
     """Return the filename if an MP3 for this title already exists, else None."""
+    if not title or not os.path.isdir(output_folder):
+        return None
     if not os.path.isdir(output_folder):
         return None
     candidate = sanitize_filename(title, restricted=False) + ".mp3"
@@ -95,11 +97,11 @@ def get_playlist_info(url: str) -> dict:
                 return {"title": "Playlist", "entries": []}
             entries = [
                 {
-                    "id": e.get("id", ""),
-                    "title": e.get("title", "Inconnu"),
-                    "url": f"https://www.youtube.com/watch?v={e.get('id', '')}",
+                    "id": e.get("id") or "",
+                    "title": e.get("title") or "Vidéo indisponible",
+                    "url": f"https://www.youtube.com/watch?v={e.get('id')}",
                 }
-                for e in info.get("entries", []) if e.get("id")
+                for e in info.get("entries", []) if e and e.get("id")
             ]
             return {"title": info.get("title", "Playlist importée"), "entries": entries}
     except Exception as e:
