@@ -9,11 +9,9 @@ static_ffmpeg.add_paths()
 MUSIC_FOLDER = "./musiques"
 
 
-def find_existing_mp3(title: str, output_folder: str = MUSIC_FOLDER) -> str | None:
+def find_existing_mp3(title: str | None, output_folder: str = MUSIC_FOLDER) -> str | None:
     """Return the filename if an MP3 for this title already exists, else None."""
     if not title or not os.path.isdir(output_folder):
-        return None
-    if not os.path.isdir(output_folder):
         return None
     candidate = sanitize_filename(title, restricted=False) + ".mp3"
     if os.path.isfile(os.path.join(output_folder, candidate)):
@@ -30,16 +28,20 @@ def search_videos(query: str, count: int = 12) -> list[dict]:
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(f"ytsearch{count}:{query}", download=False)
-            entries = info.get("entries", []) if info else []
+            entries = (info.get("entries") or []) if info else []
             results = []
             for e in entries:
-                video_id = e.get("id", "")
+                if not e:
+                    continue
+                video_id = e.get("id") or ""
+                if not video_id:
+                    continue
                 results.append({
                     "id": video_id,
-                    "title": e.get("title", "Inconnu"),
+                    "title": e.get("title") or "Inconnu",
                     "url": f"https://www.youtube.com/watch?v={video_id}",
                     "duration": _fmt_duration(e.get("duration")),
-                    "channel": e.get("channel") or e.get("uploader", ""),
+                    "channel": e.get("channel") or e.get("uploader") or "",
                     "thumbnail": f"https://i.ytimg.com/vi/{video_id}/mqdefault.jpg",
                     "views": _fmt_views(e.get("view_count")),
                 })
@@ -62,22 +64,25 @@ def search_playlists(query: str, count: int = 4) -> list[dict]:
             info = ydl.extract_info(url, download=False)
             if not info:
                 return []
-            entries = info.get("entries", [])[:count]
+            entries = (info.get("entries") or [])[:count]
             results = []
             for e in entries:
-                pl_id = e.get("id", "")
+                if not e:
+                    continue
+                pl_id = e.get("id") or ""
                 if not pl_id:
                     continue
                 thumbnail = ""
-                if e.get("thumbnails"):
-                    thumbnail = e["thumbnails"][-1].get("url", "")
+                thumbs = e.get("thumbnails") or []
+                if thumbs:
+                    thumbnail = (thumbs[-1] or {}).get("url") or ""
                 elif e.get("thumbnail"):
                     thumbnail = e["thumbnail"]
                 results.append({
                     "id": pl_id,
-                    "title": e.get("title", "Playlist"),
+                    "title": e.get("title") or "Playlist",
                     "url": f"https://www.youtube.com/playlist?list={pl_id}",
-                    "channel": e.get("channel") or e.get("uploader", ""),
+                    "channel": e.get("channel") or e.get("uploader") or "",
                     "count": e.get("playlist_count") or e.get("n_entries") or "?",
                     "thumbnail": thumbnail,
                 })
@@ -101,9 +106,12 @@ def get_playlist_info(url: str) -> dict:
                     "title": e.get("title") or "Vidéo indisponible",
                     "url": f"https://www.youtube.com/watch?v={e.get('id')}",
                 }
-                for e in info.get("entries", []) if e and e.get("id")
+                for e in (info.get("entries") or []) if e and e.get("id")
             ]
-            return {"title": info.get("title", "Playlist importée"), "entries": entries}
+            return {
+                "title": info.get("title") or "Playlist importée",
+                "entries": entries,
+            }
     except Exception as e:
         print(f"Erreur extraction playlist : {e}")
         return {"title": "Playlist", "entries": []}
@@ -137,7 +145,10 @@ def download_by_url(url: str, output_folder: str = MUSIC_FOLDER, cancel_event=No
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
-            title = info.get("title", "inconnu")
+            if not info:
+                print("Erreur : aucune information extraite.")
+                return None
+            title = info.get("title") or "inconnu"
             try:
                 raw = ydl.prepare_filename(info)
                 filename = os.path.splitext(os.path.basename(raw))[0] + ".mp3"
@@ -169,12 +180,20 @@ def download_by_name(query: str, output_folder: str = MUSIC_FOLDER) -> str | Non
         "quiet": True,
         "no_warnings": True,
         "default_search": "ytsearch",
+        "retries": 10,
+        "fragment_retries": 10,
+        "extractor_retries": 3,
+        "sleep_interval": 1,
+        "max_sleep_interval": 4,
     }
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(f"ytsearch1:{query}", download=True)
-            entries = info.get("entries", [info])
-            title = entries[0].get("title", "inconnu") if entries else "inconnu"
+            if not info:
+                return None
+            entries = info.get("entries") or [info]
+            first = entries[0] if entries else None
+            title = (first.get("title") if first else None) or "inconnu"
             print(f"Téléchargé : {title}.mp3")
             return title
     except yt_dlp.utils.DownloadError as e:

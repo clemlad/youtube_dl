@@ -1,6 +1,5 @@
 import os
 import json
-from unittest import result
 import uuid
 import threading
 from pathlib import Path
@@ -22,6 +21,10 @@ _pl_cancel_events: dict[str, threading.Event]  = {}
 
 PLAYLISTS_FILE = Path("playlists.json")
 
+# Protège toute séquence lire-modifier-écrire sur playlists.json.
+# Sans ça, deux téléchargements de playlist simultanés s'écrasent mutuellement.
+_playlists_lock = threading.Lock()
+
 
 # ── Playlist file helpers ────────────────────────────────────────────────────
 
@@ -33,10 +36,32 @@ def _load() -> dict:
             pass
     return {}
 
+
 def _save(data: dict) -> None:
     PLAYLISTS_FILE.write_text(
         json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
     )
+
+
+def _ensure_playlist(name: str) -> None:
+    """Crée la playlist si absente, de façon atomique."""
+    with _playlists_lock:
+        data = _load()
+        if name not in data:
+            data[name] = []
+            _save(data)
+
+
+def _append_track(name: str, filename: str) -> None:
+    """Ajoute un titre à une playlist, de façon atomique."""
+    if not name or not filename:
+        return
+    with _playlists_lock:
+        data = _load()
+        data.setdefault(name, [])
+        if filename not in data[name]:
+            data[name].append(filename)
+            _save(data)
 
 
 # ── Pages ────────────────────────────────────────────────────────────────────
@@ -85,13 +110,18 @@ def start_download():
     _cancel_events[job_id] = cancel_event
 
     def run():
-        result = download_by_url(url, cancel_event=cancel_event)
-        if result:
-            _jobs[job_id] = {"status": "done", "title": result["title"], "error": None}
-        elif cancel_event.is_set():
-            _jobs[job_id] = {"status": "cancelled", "title": None, "error": None}
-        else:
-            _jobs[job_id] = {"status": "error", "title": None, "error": "Téléchargement échoué"}
+        try:
+            result = download_by_url(url, cancel_event=cancel_event)
+            if result:
+                _jobs[job_id] = {"status": "done", "title": result["title"], "error": None}
+            elif cancel_event.is_set():
+                _jobs[job_id] = {"status": "cancelled", "title": None, "error": None}
+            else:
+                _jobs[job_id] = {"status": "error", "title": None, "error": "Téléchargement échoué"}
+        except Exception as e:
+            # Sans ce filet, une exception tue le thread et le job reste
+            # bloqué en "pending" : le front boucle indéfiniment.
+            _jobs[job_id] = {"status": "error", "title": None, "error": str(e)}
 
     threading.Thread(target=run, daemon=True).start()
     return jsonify({"job_id": job_id})
@@ -115,34 +145,37 @@ def download_playlist():
     if not url:
         return jsonify({"error": "URL manquante"}), 400
 
-    job_id          = str(uuid.uuid4())
-    cancel_event    = threading.Event()
-    _pl_jobs[job_id]          = {"status": "pending", "name": name, "total": 0, "done": 0, "current": "", "tracks": [], "error": None}
+    job_id       = str(uuid.uuid4())
+    cancel_event = threading.Event()
+    _pl_jobs[job_id] = {
+        "status": "pending", "name": name, "total": 0, "done": 0,
+        "current": "", "tracks": [], "failed": [], "error": None,
+    }
     _pl_cancel_events[job_id] = cancel_event
 
     def run():
         try:
             pl_info = get_playlist_info(url)
             entries = pl_info.get("entries", [])
-            pl_name = name or pl_info.get("title", "Playlist importée")
+            pl_name = name or pl_info.get("title") or "Playlist importée"
 
-            _pl_jobs[job_id].update({"status": "downloading", "name": pl_name, "total": len(entries)})
+            _pl_jobs[job_id].update({
+                "status": "downloading", "name": pl_name, "total": len(entries),
+            })
 
-            d = _load()
-            if pl_name not in d:
-                d[pl_name] = []
+            _ensure_playlist(pl_name)
 
             for i, entry in enumerate(entries):
                 if cancel_event.is_set():
                     break
-                _pl_jobs[job_id]["current"] = entry["title"]
+
+                title = entry.get("title") or "Titre inconnu"
+                _pl_jobs[job_id]["current"] = title
                 _pl_jobs[job_id]["done"]    = i
 
-                existing = find_existing_mp3(entry["title"])
+                existing = find_existing_mp3(title)
                 if existing:
-                    if existing not in d[pl_name]:
-                        d[pl_name].append(existing)
-                        _save(d)
+                    _append_track(pl_name, existing)
                     _pl_jobs[job_id]["tracks"].append(existing)
                     _pl_jobs[job_id]["done"] = i + 1
                     continue
@@ -150,13 +183,11 @@ def download_playlist():
                 result = download_by_url(entry["url"], cancel_event=cancel_event)
                 if result and not cancel_event.is_set():
                     filename = result["filename"]
-                    if filename not in d[pl_name]:
-                        d[pl_name].append(filename)
-                        _save(d)
+                    _append_track(pl_name, filename)
                     _pl_jobs[job_id]["tracks"].append(filename)
                     _pl_jobs[job_id]["done"] = i + 1
                 elif not cancel_event.is_set():
-                    _pl_jobs[job_id].setdefault("failed", []).append(entry["title"])
+                    _pl_jobs[job_id]["failed"].append(title)
 
             _pl_jobs[job_id]["status"] = "cancelled" if cancel_event.is_set() else "done"
             _pl_jobs[job_id]["done"]   = len(_pl_jobs[job_id]["tracks"])
@@ -212,7 +243,8 @@ def serve_music(filename):
 
 @app.route("/playlists")
 def get_playlists():
-    return jsonify(_load())
+    with _playlists_lock:
+        return jsonify(_load())
 
 
 @app.route("/playlists", methods=["POST"])
@@ -220,41 +252,45 @@ def create_playlist():
     name = (request.get_json(silent=True) or {}).get("name", "").strip()
     if not name:
         return jsonify({"error": "Nom vide"}), 400
-    data = _load()
-    if name in data:
-        return jsonify({"error": "Playlist déjà existante"}), 409
-    data[name] = []
-    _save(data)
+    with _playlists_lock:
+        data = _load()
+        if name in data:
+            return jsonify({"error": "Playlist déjà existante"}), 409
+        data[name] = []
+        _save(data)
     return jsonify({"ok": True})
 
 
 @app.route("/playlists/<name>", methods=["DELETE"])
 def delete_playlist(name):
-    data = _load()
-    data.pop(name, None)
-    _save(data)
+    with _playlists_lock:
+        data = _load()
+        data.pop(name, None)
+        _save(data)
     return jsonify({"ok": True})
 
 
 @app.route("/playlists/<name>/tracks", methods=["POST"])
 def add_to_playlist(name):
     track = (request.get_json(silent=True) or {}).get("track", "").strip()
-    data  = _load()
-    if name not in data:
-        return jsonify({"error": "Playlist introuvable"}), 404
-    if track and track not in data[name]:
-        data[name].append(track)
-        _save(data)
+    with _playlists_lock:
+        data = _load()
+        if name not in data:
+            return jsonify({"error": "Playlist introuvable"}), 404
+        if track and track not in data[name]:
+            data[name].append(track)
+            _save(data)
     return jsonify({"ok": True})
 
 
 @app.route("/playlists/<name>/tracks", methods=["DELETE"])
 def remove_from_playlist(name):
     track = (request.get_json(silent=True) or {}).get("track", "").strip()
-    data  = _load()
-    if name in data and track in data[name]:
-        data[name].remove(track)
-        _save(data)
+    with _playlists_lock:
+        data = _load()
+        if name in data and track in data[name]:
+            data[name].remove(track)
+            _save(data)
     return jsonify({"ok": True})
 
 
